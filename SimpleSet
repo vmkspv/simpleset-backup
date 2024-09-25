@@ -1,0 +1,216 @@
+#!/bin/bash
+
+LIGHT_GREEN="\033[1;32m"
+LIGHT_BLUE="\033[1;34m"
+LIGHT_CYAN="\033[1;36m"
+LIGHT_RED="\033[1;31m"
+LIGHT_PURPLE="\033[1;35m"
+NC="\033[0m"
+
+draw_border() {
+    printf "${LIGHT_BLUE}%*s${NC}\n" "${COLUMNS:-$(tput cols)}" "" | tr " " -
+}
+
+draw_title() {
+    echo ""
+    draw_border
+    echo -e "${LIGHT_CYAN}   _____            __    ____    __ "
+    echo -e "  / __(_)_ _  ___  / /__ / __/__ / /_"
+    echo -e " _\ \/ /  ' \/ _ \/ / -_)\ \/ -_) __/"
+    echo -e "/___/_/_/_/_/ .__/_/\__/___/\__/\__/ "
+    echo -e "           /_/                       ${NC}"
+    echo -e "${LIGHT_PURPLE}SimpleSet — user settings backup and restore${NC}"
+    draw_border
+    echo ""
+}
+
+show_progress() {
+    local duration=$1
+    local delay=0.1
+    local progress=0
+    local bar_length=50
+    while [ $progress -le $duration ]; do
+        local percent=$((progress * 100 / duration))
+        local filled=$((bar_length * percent / 100))
+        local empty=$((bar_length - filled))
+        printf "\r${LIGHT_PURPLE}[%-${bar_length}s] ${percent}%%${NC}" "$(printf "#%.0s" $(seq 1 $filled))"
+        sleep $delay
+        progress=$((progress + 1))
+    done
+    printf "\n"
+}
+
+backup_dir="$HOME/.config/simpleset"
+mkdir -p "$backup_dir"
+
+current_datetime=$(date +%Y-%m-%d_%H-%M-%S)
+
+backup() {
+    backup_file="simple_$current_datetime"
+    echo ""
+    draw_border
+    echo -e "${LIGHT_GREEN}Backing up user settings...${NC}"
+    show_progress 30
+    dconf dump / > "$backup_dir/$backup_file"
+    echo -e "${LIGHT_GREEN}Backup completed: $(basename "$backup_file")${NC}"
+    draw_border
+    echo ""
+}
+
+silent_backup() {
+    backup_file="simple_$current_datetime"
+    dconf dump / > "$backup_dir/$backup_file"
+}
+
+restore() {
+    backups=$(find "$backup_dir" -name "simple_*")
+    backups_array=($backups)
+
+    echo ""
+    draw_border
+    if [ ${#backups_array[@]} -eq 0 ]; then
+        echo -e "${LIGHT_RED}No backups found to restore.${NC}"
+        draw_border
+        echo ""
+        return
+    elif [ ${#backups_array[@]} -eq 1 ]; then
+        backup_name="$(basename "${backups_array[0]}")"
+        echo -e "${LIGHT_GREEN}Restoring user settings...${NC}"
+        show_progress 30
+        dconf load / < "${backups_array[0]}"
+        echo -e "${LIGHT_GREEN}Restore completed: $backup_name${NC}"
+        draw_border
+        echo ""
+        return
+    fi
+
+    echo -e "${LIGHT_CYAN}Multiple backups found. Select one to restore:${NC}"
+    backup_names=()
+    for i in "${backups_array[@]}"; do
+        backup_names+=("$(basename "$i")")
+    done
+
+    for index in "${!backup_names[@]}"; do
+        echo -e "${LIGHT_GREEN}$((index+1))) ${backup_names[index]}${NC}"
+    done
+
+    echo ""
+    read -p "$(echo -e ${LIGHT_CYAN})Enter the backup number to restore: $(echo -e ${NC})" choice
+    echo ""
+    draw_border
+    if [[ $choice -gt 0 && $choice -le ${#backup_names[@]} ]]; then
+        backup_name=${backup_names[$((choice-1))]}
+        backup_file="$backup_dir/$backup_name"
+        echo -e "${LIGHT_GREEN}Restoring user settings...${NC}"
+        show_progress 30
+        dconf load / < "$backup_file"
+        echo -e "${LIGHT_GREEN}Restore completed: $backup_name${NC}"
+        draw_border
+        echo ""
+    else
+        echo -e "${LIGHT_RED}Invalid selection. Try again.${NC}"
+        draw_border
+        echo ""
+    fi
+}
+
+silent_restore() {
+    latest_backup=$(find "$backup_dir" -name "simple_*" -type f -printf "%T@ %p\n" | sort -n | tail -1 | cut -d" " -f2)
+    if [ -z "$latest_backup" ]; then
+        echo -e "${LIGHT_RED}No backups found to restore.${NC}"
+        exit 1
+    fi
+    dconf load / < "$latest_backup"
+}
+
+create_sh() {
+    echo ""
+    draw_border
+    read -p "$(echo -e ${LIGHT_CYAN})Enter the subdirectory to export ($HOME/): $(echo -e ${NC})" sub_dir
+    export_dir="$HOME/$sub_dir"
+    mkdir -p "$export_dir"
+    draw_border
+    echo -e "${LIGHT_GREEN}Converting dconf backup to gsettings format...${NC}"
+    show_progress 30
+    export_file="simple_$current_datetime.sh"
+    echo -e "#!/bin/bash\n" > "$export_dir/$export_file"
+    dconf dump / | while IFS= read -r line; do
+        if [[ $line == [* ]]; then
+            schema=${line:1:-1}
+            schema=${schema//\//.}
+        elif [[ -n $line ]]; then
+            key=$(echo $line | cut -d'=' -f1)
+            value=$(echo $line | cut -d'=' -f2-)
+            if gsettings list-schemas | grep -q "^$schema$"; then
+                echo "gsettings set $schema $key \"$value\"" >> "$export_dir/$export_file"
+            fi
+        fi
+    done
+    chmod +x "$export_dir/$export_file"
+    echo -e "${LIGHT_GREEN}Export completed: $(basename "$export_file")${NC}"
+    draw_border
+    echo ""
+}
+
+silent_create_sh() {
+    export_dir="$HOME"
+    export_file="simple_$current_datetime.sh"
+    echo -e "#!/bin/bash\n" > "$export_dir/$export_file"
+    dconf dump / | while IFS= read -r line; do
+        if [[ $line == [* ]]; then
+            schema=${line:1:-1}
+            schema=${schema//\//.}
+        elif [[ -n $line ]]; then
+            key=$(echo $line | cut -d'=' -f1)
+            value=$(echo $line | cut -d'=' -f2-)
+            if gsettings list-schemas | grep -q "^$schema$"; then
+                echo "gsettings set $schema $key \"$value\"" >> "$export_dir/$export_file"
+            fi
+        fi
+    done
+    chmod +x "$export_dir/$export_file"
+}
+
+while getopts ":brc" opt; do
+    case $opt in
+    b)
+        silent_backup
+        exit 0
+        ;;
+    r)
+        silent_restore
+        exit 0
+        ;;
+    c)
+        silent_create_sh
+        exit 0
+        ;;
+    \?)
+        echo -e "${LIGHT_RED}Invalid option: -$OPTARG${NC}" >&2
+        exit 1
+        ;;
+    esac
+done
+
+draw_title
+while true; do
+    echo -e "${LIGHT_CYAN}Please select an option:${NC}"
+    echo -e "${LIGHT_GREEN}1) Backup user settings${NC}"
+    echo -e "${LIGHT_GREEN}2) Restore user settings${NC}"
+    echo -e "${LIGHT_GREEN}3) Create gsettings script${NC}"
+    echo ""
+    read -p "$(echo -e ${LIGHT_CYAN})Enter your choice (1-3): $(echo -e ${NC})" user_choice
+
+    case $user_choice in
+    1) backup; break ;;
+    2) restore; break ;;
+    3) create_sh; break ;;
+    *)
+        echo ""
+        draw_title
+        echo -e "${LIGHT_RED}Invalid selection. Try again.${NC}"
+        draw_title
+        echo ""
+        ;;
+    esac
+done
